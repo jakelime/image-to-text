@@ -1,108 +1,123 @@
-# Python script to extract text from an image using Tesseract OCR.
-
-# --- Installation (Run these commands in your terminal) ---
-# 1. Install Pillow (a Python imaging library):
-#    pip install Pillow
-#
-# 2. Install pytesseract (a Python wrapper for Tesseract):
-#    pip install pytesseract
-#
-# 3. Install Google's Tesseract OCR Engine:
-#    This is a separate application that pytesseract uses.
-#
-#    - On macOS (using Homebrew):
-#      brew install tesseract
-#
-#    - On Ubuntu/Debian:
-#      sudo apt update
-#      sudo apt install tesseract-ocr
-#
-#    - On Windows:
-#      Download and run the installer from the official Tesseract repository.
-#      You can find it here: https://github.com/UB-Mannheim/tesseract/wiki
-#      During installation, make a note of the path where Tesseract is installed
-#      (e.g., C:\Program Files\Tesseract-OCR\tesseract.exe). You may need to
-#      add this path to your script.
-
-import os
+import argparse
+import sys
+from datetime import datetime
 from pathlib import Path
 
+import pytesseract
+from PIL import Image
 
 
-try:
-    from PIL import Image
-except ImportError:
-    print("Pillow library not found. Please install it using: pip install Pillow")
-    exit()
-
-try:
-    import pytesseract
-    # C:\Program Files\Tesseract-OCR
-    pytesseract.pytesseract.tesseract_cmd = 'C:/Program Files/Tesseract-OCR/tesseract.exe'
-except ImportError:
-    print(
-        "pytesseract library not found. Please install it using: pip install pytesseract"
+def get_args():
+    """
+    Parses command-line arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Batch extract text from images to a timestamped text file."
     )
-    exit()
+
+    # Positional argument: The Input Directory
+    parser.add_argument(
+        "input_dir",
+        type=Path,
+        help="Path to the folder containing images."
+    )
+
+    # Optional argument: Output Directory (defaults to input dir if not set)
+    parser.add_argument(
+        "-o", "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory to save the output file (default: same as input directory)."
+    )
+
+    # Optional argument: Language
+    parser.add_argument(
+        "--lang",
+        type=str,
+        default="eng",
+        help="Tesseract language code (default: 'eng')."
+    )
+
+    return parser.parse_args()
 
 
-def extract_text_from_image(image_path):
+def extract_text_from_image(image_path, lang="eng"):
     """
     Extracts text from an image file using Tesseract OCR.
-
-    Args:
-        image_path (str): The file path to the image.
-
-    Returns:
-        str: The extracted text from the image. Returns an error message
-             if the file is not found or an OCR error occurs.
+    Returns None if an error occurs, printing the error to stderr.
     """
     try:
-        # On Windows, you might need to explicitly point to the Tesseract executable.
-        # Uncomment the line below and update the path if you installed Tesseract
-        # in a non-standard location.
-        # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-
-        # Open the image file using Pillow
         with Image.open(image_path) as img:
-            # Use pytesseract to extract text. The 'lang' parameter can be changed
-            # to support other languages (e.g., 'fra' for French, 'spa' for Spanish).
-            # You might need to install the language packs for Tesseract separately.
-            text = pytesseract.image_to_string(img, lang="eng")
-            return text
-
-    except FileNotFoundError:
-        return f"Error: The file '{image_path}' was not found."
+            text = pytesseract.image_to_string(img, lang=lang)
+            return text.strip()
     except Exception as e:
-        # This will catch other potential errors from pytesseract
-        return f"An error occurred during OCR processing: {e}"
+        # Print error to standard error stream so it doesn't clutter standard output
+        print(f"[!] Error processing {image_path.name}: {e}", file=sys.stderr)
+        return None
 
 
-# --- Example Usage ---
+def main():
+    args = get_args()
+
+    # 1. Validate Input Directory
+    if not args.input_dir.exists() or not args.input_dir.is_dir():
+        print(f"Error: The input directory '{args.input_dir}' does not exist or is not a folder.")
+        sys.exit(1)
+
+    # 2. Configure Output Path
+    # If no output dir is specified, save to the input dir
+    output_dir = args.output_dir if args.output_dir else args.input_dir
+
+    # Create output dir if it doesn't exist
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate timestamped filename
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_file = output_dir / f"output.{timestamp}.txt"
+
+    # 3. Gather Image Files
+    # We use a set of extensions and check case-insensitively
+    valid_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
+
+    # List comprehension to find all matching files
+    filepaths = [
+        p for p in args.input_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in valid_extensions
+    ]
+
+    # Sort by modification time (oldest to newest)
+    filepaths.sort(key=lambda x: x.stat().st_mtime)
+
+    if not filepaths:
+        print(f"No images found in '{args.input_dir}'.")
+        sys.exit(0)
+
+    print(f"Found {len(filepaths)} images. Processing...")
+    print(f"Writing results to: {output_file}")
+
+    # 4. Process and Write to File
+    # We open the file once and append text as we loop
+    with open(output_file, "w", encoding="utf-8") as f:
+        # Write a header
+        f.write(f"OCR Extraction Report\n")
+        f.write(f"Source: {args.input_dir}\n")
+        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("=" * 40 + "\n\n")
+
+        for fp in filepaths:
+            print(f"-> Processing: {fp.name}")
+            extracted_text = extract_text_from_image(fp, args.lang)
+
+            f.write(f"--- SOURCE FILE: {fp.name} ---\n")
+            if extracted_text:
+                f.write(extracted_text)
+            else:
+                f.write("[ERROR: Could not extract text]")
+
+            f.write("\n\n" + ("-" * 40) + "\n\n")
+
+    print("Done.")
+
+
 if __name__ == "__main__":
-    # Replace 'path/to/your/image.png' with the actual path to your image file.
-    # Supported formats include PNG, JPEG, TIFF, BMP, etc.
-    screenshot_folder = Path(r"C:\Users\huili\Pictures\Screenshots")
-    images = [fp for fp in screenshot_folder.glob("*.png")]
-    images.sort(key=os.path.getmtime)
-    image_file = images[-1]
-    # [print(i) for i in images]
-    # image_file = 'path/to/your/image.png'
-
-    # Check if the placeholder path has been changedC:\Users\huili\venv\Scripts\python.exe
-    if image_file == 'path/to/your/image.png':
-        print("="*50)
-        print("Please update the 'image_file' variable with the path to your image.")
-        print("="*50)
-    else:
-        # Call the function to extract text
-        extracted_text = extract_text_from_image(image_file)
-
-        # Print the results
-        print("--- Extracted Text ---")
-        if extracted_text and "Error:" not in extracted_text:
-            print(extracted_text)
-        else:
-            print("No text could be extracted or an error occurred.")
-            print(extracted_text) # Print the specific error message
-        print("----------------------")
+    main()
